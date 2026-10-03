@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16      # pg16 버전
+    container_name: postgres           # 컨테이너 이름 지정
+    restart: unless-stopped            # 컴퓨터 재부팅 시 자동으로 다시 실행되도록 설정
+    environment:
+      POSTGRES_USER: postgres          # DB 접속 계정
+      POSTGRES_PASSWORD: postgres      # 비밀번호
+      POSTGRES_DB: rfp_rag             # 처음 생성될 DB 이름
+    ports:
+      - "5432:5432"                    # 내 PC의 5432 포트를 컨테이너의 5432 포트와 연결
+    volumes:
+      - pgdata:/var/lib/postgresql/data  # 컨테이너를 지워도 데이터가 남도록 볼륨 지정
+
+volumes:
+  pgdata:   # 실제 데이터가 저장되는 도커 볼륨

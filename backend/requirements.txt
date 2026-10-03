@@ -1,0 +1,10 @@
+# backend 에서 쓰는 라이브러리 목록
+#   설치:  pip install -r requirements.txt
+# (버전을 고정하려면 나중에 `pip freeze > requirements.txt`로 현재 설치된 버전을 기록하세요.)
+fastapi
+uvicorn[standard]
+google-genai
+psycopg2-binary
+python-dotenv
+pandas
+requests

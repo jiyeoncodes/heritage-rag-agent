@@ -1,0 +1,25 @@
+# ---- 비밀 정보 (API 키, DB 비밀번호) : 절대 커밋하면 안 돼요 ----
+.env
+.env.*
+!.env.example
+!env.example
+**/.env
+**/.env.local
+
+# ---- 파이썬 ----
+venv/
+.venv/
+**/venv/
+__pycache__/
+*.pyc
+
+# ---- 프론트엔드(React/Vite) ----
+node_modules/
+dist/
+*.local
+
+# ---- 운영체제/에디터 ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
