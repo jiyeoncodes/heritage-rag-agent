@@ -4,7 +4,7 @@
 #
 #   질문
 #    ① 질문을 숫자(벡터)로 바꾸기      embed_query()
-#    ② DB에서 의미가 비슷한 유산 찾기    search()
+#    ② DB에서 의미가 비슷한 유산 찾기 + 키워드 점수로 보정(하이브리드)   search() / search_debug()
 #    ③ 찾은 글만 보고 LLM이 답변 만들기  build_prompt() + ask_llm()
 #    ④ 답변과 출처를 정리해서 돌려주기    answer()
 #
@@ -23,6 +23,8 @@ import psycopg2                                   # 파이썬에서 PostgreSQL�
 from dotenv import load_dotenv                    # .env 파일을 읽어 환경변수로 등록해 주는 라이브러리
 from google import genai                          # Gemini API 라이브러리
 from google.genai.types import EmbedContentConfig, GenerateContentConfig
+
+import hybrid_search                              # 질문 분류 · 키워드 점수 · 점수 합치기 (같은 backend/ 폴더)
 
 
 # ------------------------------------------------------------
@@ -70,18 +72,25 @@ MAX_WAIT_SECONDS = 10     # 이보다 오래 기다려야 한다면 재시도하
 # ------------------------------------------------------------
 # ⚠ scripts/answer_test.py의 SYSTEM_INSTRUCTION과 같은 내용이에요.
 #   평가(eval_answer.py)로 검증한 규칙이라, 한쪽만 고치면 서로 어긋나요. 고칠 땐 두 곳을 같이 고치세요.
-SYSTEM_INSTRUCTION = """당신은 조선 궁궐(경복궁, 창덕궁, 창경궁, 덕수궁)과 종묘를 안내하는 해설사입니다.
+SYSTEM_INSTRUCTION = """당신은 조선의 궁궐(경복궁, 창덕궁, 창경궁, 덕수궁, 경희궁), 종묘, 조선왕릉을 안내하는 해설사입니다.
 반드시 아래 [참고 자료]에 적힌 내용만 근거로 답하세요.
 규칙:
 1. 참고 자료에 근거가 없으면 지어내지 말고 "제공된 자료에서는 확인할 수 없습니다"라고 답하세요.
 2. 질문에 쓰인 단어가 자료에 그대로 없어도, 자료의 설명(위치, 역할, 방향 등)으로 합리적으로 판단할 수 있으면
    그 근거를 함께 밝히며 답하세요. 단, 추론한 경우에는 "자료상 ~로 보입니다"처럼 추론임을 드러내세요.
 3. 답변은 쉬운 한국어로 3~5문장 이내로 간결하게 쓰세요.
-4. 답변 끝에 근거로 사용한 유산을 '출처: [궁 이름 유산명]' 형식으로 적으세요. (아래 6번의 경우는 제외)
+4. 답변 끝에 근거로 사용한 유산을 '출처: [분류 유산명]' 형식으로 적으세요. 분류와 유산명은 참고 자료 머리말
+   '[분류] 유산명 - ...'에 적힌 그대로 쓰되, 대괄호 하나 안에 함께 넣으세요.
+   올바른 예) 출처: [경복궁 광화문]   출처: [조선왕릉 영월 장릉]
+   틀린 예) 출처: [경복궁] 광화문   (대괄호를 둘로 나누지 마세요)   (아래 6번의 경우는 제외)
 5. 참고 자료에 실제로 적힌 표현이 아니면 "자료에 명시되어 있다"고 쓰지 마세요.
    추론한 내용은 반드시 "자료상 ~로 보입니다", "추론하면 ~"처럼 추론임을 구분해서 쓰세요.
 6. 질문에 대한 답을 참고 자료에서 확인할 수 없으면 "제공된 자료에서는 확인할 수 없습니다."라고
-   한 문장만 쓰세요. 질문과 무관한 다른 정보를 덧붙이지 말고, 출처 줄도 쓰지 마세요."""
+   한 문장만 쓰세요. 질문과 무관한 다른 정보를 덧붙이지 말고, 출처 줄도 쓰지 마세요.
+   이 문장 뒤에는 '출처:'나 설명을 포함해 어떤 글도 붙이지 마세요.
+7. 조선왕릉 자료는 능 하나가 아니라 여러 능을 묶은 "능역" 설명일 수 있습니다. 질문한 인물의 능이나 무덤이
+   참고 자료에 명시되어 있을 때만 그 능역을 답하세요. 인물이 자료에 언급만 되고 무덤에 대한 내용이 없으면
+   6번처럼 확인할 수 없다고 답하세요."""
 
 
 # ------------------------------------------------------------
@@ -175,25 +184,36 @@ def embed_query(question):
     return _call_with_retry(_call, "임베딩")
 
 
-def search(question, top_k=TOP_K):
-    """질문과 의미가 가장 비슷한 유산 top_k개를 DB에서 찾아 딕셔너리 리스트로 돌려줘요."""
-    query_vec = embed_query(question)
+# 하이브리드 검색 설정 (계산 로직은 hybrid_search.py에 있어요)
+#   rrf : 순위 합치기 (기본)   weighted : 벡터 유사도 + 키워드 점수 가중 합   vector : 예전 방식(벡터만, 비교용)
+HYBRID_METHOD = os.environ.get("HYBRID_METHOD", "rrf")      # 2026-10-06 평가: rrf가 가중 합보다 점수가 좋았어요
+HYBRID_CANDIDATES = 200     # DB에서 벡터 거리순으로 가져올 후보 수. 지금은 151건뿐이라 사실상 전부예요.
+                            # (데이터가 수천 건이 되면 키워드 계산은 DB 쪽으로 옮기는 게 좋아요.)
+
+
+def _fetch_candidates(query_vec):
+    """질문 벡터와 가까운 순서로 후보를 가져와요. 각 후보는 hybrid_search.py가 쓰는 딕셔너리 모양이에요."""
     vec_literal = "[" + ",".join(str(v) for v in query_vec) + "]"   # 파이썬 리스트 → pgvector가 읽는 문자열
 
     conn = psycopg2.connect(**DB_CONFIG)       # 요청마다 연결을 열고 닫아요. (트래픽이 적은 지금은 이 방식이 가장 단순해요.)
     try:
         with conn.cursor() as cur:
-            # <=> 는 pgvector의 '코사인 거리'예요. 작을수록 의미가 비슷해서, 거리 오름차순으로 top_k개를 가져와요.
+            # <=> 는 pgvector의 '코사인 거리'예요. 작을수록 의미가 비슷해서, 거리 오름차순으로 가져와요.
             # 1 - 거리 = 유사도 (1에 가까울수록 비슷)
             cur.execute(
                 """
-                SELECT gung_name, contents_kor, chunk_text, img_url,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM heritage_chunks
-                ORDER BY embedding <=> %s::vector
+                SELECT h.group_name, h.name_kor, h.entity_type, c.chunk_text, COALESCE(img.url, ''),
+                       1 - (c.embedding <=> %s::vector) AS similarity
+                FROM heritage_chunk c
+                JOIN heritage h ON h.id = c.heritage_id            -- 청크(설명글+벡터)에 유산 정보(이름·분류)를 붙여요
+                LEFT JOIN LATERAL (                                -- 유산마다 "대표 이미지 1장"만 골라 붙여요 (없으면 빈 값)
+                    SELECT m.url FROM media m
+                     WHERE m.heritage_id = h.id AND m.media_type = 'image'
+                     ORDER BY m.sort_order, m.id LIMIT 1) img ON true
+                ORDER BY c.embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (vec_literal, vec_literal, top_k),
+                (vec_literal, vec_literal, HYBRID_CANDIDATES),
             )
             rows = cur.fetchall()
     finally:
@@ -203,20 +223,66 @@ def search(question, top_k=TOP_K):
         {
             "gung_name": gung,
             "name": name,
-            "text": text,                       # LLM에게 줄 본문 전체 ("[궁] 유산명 - 설명글")
+            "entity_type": entity_type,
+            "text": text,                       # 설명글 원문 (머리말 없음. LLM에게 줄 때 build_prompt()가 [분류] 유산명 - 을 붙여요)
             "img_url": img_url or None,         # 빈 문자열이면 None(없음)으로 통일
             "similarity": round(float(sim), 4),
         }
-        for gung, name, text, img_url, sim in rows
+        for gung, name, entity_type, text, img_url, sim in rows
     ]
 
 
+def search_debug(question, top_k=TOP_K, method=None, query_vec=None):
+    """하이브리드 검색. (결과 리스트, 검색 과정 설명 딕셔너리)를 돌려줘요. 평가 스크립트가 과정까지 기록할 때 써요.
+       ① 질문 분류 → ② 벡터 검색(후보) → ③ 범위 안 후보만 남기기 → ④ 키워드 점수 → ⑤ 점수 합쳐 정렬
+    method: "weighted" | "rrf" | "vector"  (None이면 HYBRID_METHOD 설정 사용)
+    query_vec: 질문 벡터를 이미 갖고 있으면 넣어요. (평가에서 같은 질문을 여러 방식으로 비교할 때 API 호출을 아끼려고)"""
+    method = method or HYBRID_METHOD
+    if query_vec is None:
+        query_vec = embed_query(question)
+    candidates = _fetch_candidates(query_vec)
+
+    if method == "vector":                      # 예전 방식: 벡터 유사도 순서 그대로
+        ranked = hybrid_search.fuse(candidates, [0.0] * len(candidates), "vector")
+        info = {"method": method, "scope": "사용 안 함", "terms": {}}
+    else:
+        scope = hybrid_search.classify_question(question)                          # ① 질문 분류
+        kept, used, why = hybrid_search.apply_scope(candidates, scope)             # ③ 범위 적용(애매하면 전체로)
+        labels = hybrid_search.KW_LABELS                                           # 키워드를 적용할 범위 (None = 전부)
+        if labels is None or (used and used["label"] in labels):
+            kw, weights = hybrid_search.keyword_scores(question, kept)             # ④ 키워드 점수
+        else:
+            kw, weights = [0.0] * len(kept), {}                                    # 이 범위에서는 키워드를 쓰지 않아요
+        ranked = hybrid_search.fuse(kept, kw, method)                              # ⑤ 합쳐서 정렬
+        info = {"method": method, "scope": why, "terms": {k: round(v, 2) for k, v in weights.items()}}
+
+    hits = [
+        {
+            "gung_name": c["gung_name"],
+            "name": c["name"],
+            "text": c["text"],
+            "img_url": c["img_url"],
+            "similarity": c["similarity"],      # 벡터 유사도 (화면·출처 표시용)
+            "score": round(c["score"], 4),      # 최종 점수 (정렬 기준)
+            "kw": c["kw"],                      # 키워드 점수
+        }
+        for c in ranked[:top_k]
+    ]
+    return hits, info
+
+
+def search(question, top_k=TOP_K):
+    """질문과 가장 관련 있는 유산 top_k개를 찾아 딕셔너리 리스트로 돌려줘요. (answer()가 이 함수를 써요)"""
+    hits, _info = search_debug(question, top_k)
+    return hits
+
+
 def count_chunks():
-    """heritage_chunks 테이블에 저장된 유산 개수를 세요. (서버 상태 확인용)"""
+    """heritage_chunk 표에 저장된 청크 개수를 세요. (서버 상태 확인용)"""
     conn = psycopg2.connect(**DB_CONFIG)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM heritage_chunks")
+            cur.execute("SELECT COUNT(*) FROM heritage_chunk")
             return cur.fetchone()[0]
     finally:
         conn.close()
@@ -227,7 +293,8 @@ def count_chunks():
 # ------------------------------------------------------------
 def build_prompt(question, hits):
     """검색 결과를 '[참고 자료] (1)...(5)...' 형태로 이어 붙이고, 질문과 합쳐 LLM에게 줄 글을 만들어요."""
-    reference = "\n\n".join(f"({i}) {h['text']}" for i, h in enumerate(hits, start=1))
+    # 임베딩에는 원문만 넣었으니, 머리말("[분류] 유산명 - ")은 여기서 붙여요. LLM이 출처 이름을 이 머리말에서 가져가요.
+    reference = "\n\n".join(f"({i}) [{h['gung_name']}] {h['name']} - {h['text']}" for i, h in enumerate(hits, start=1))
     return f"[참고 자료]\n{reference}\n\n[질문]\n{question}"
 
 
@@ -270,21 +337,32 @@ def ask_llm(prompt):
 # ------------------------------------------------------------
 def split_answer_and_citations(reply):
     """LLM 답변에서 '출처: [경복궁 광화문]' 줄을 떼어내요.
-    돌려주는 값: (출처 줄을 뺀 본문, 출처로 적힌 이름 리스트)  예: ("...", ["경복궁 광화문"])"""
+    돌려주는 값: (출처 줄을 뺀 본문, 출처로 적힌 이름 리스트)  예: ("...", ["경복궁 광화문"])
+    - 출처 형식이 조금 달라도("[경복궁] 광화문", 대괄호 없음) 대괄호를 지우고 쉼표로 나눠서 읽어요.
+    - 거절 답변("제공된 자료에서는 ... 확인할 수 없습니다")은 LLM이 규칙을 어기고 출처를 붙여도 떼어 내요."""
     body_lines, cited = [], []
     for line in reply.splitlines():
-        if line.strip().startswith("출처"):
-            cited += [c.strip() for c in re.findall(r"\[([^\]]+)\]", line)]   # 대괄호 안의 글자만 뽑기
+        found = re.search(r"출처\s*[:：]", line)            # "출처:"가 줄 앞에 있든, 문장 끝에 붙어 있든 찾아요
+        if found:
+            before = line[: found.start()].strip()           # "출처:" 앞의 글은 본문으로 남겨요
+            if before:
+                body_lines.append(before)
+            names = line[found.end():].replace("[", "").replace("]", "")
+            cited += [c.strip() for c in names.split(",") if c.strip()]
         else:
             body_lines.append(line)
-    body = "\n".join(body_lines).strip()
-    return (body or reply.strip()), cited
+    body = "\n".join(body_lines).strip() or reply.strip()
+
+    # 거절 답변 보호장치: 근거가 없다고 해 놓고 출처를 붙이면 화면에 엉뚱한 "근거"가 보이니까 지워요.
+    if body.startswith("제공된 자료에서") and "확인할 수 없" in body:
+        body = re.split(r"\s*출처\s*[:：]", body)[0].strip()   # 같은 줄에 붙은 "출처: ..."도 제거
+        cited = []
+    return body, cited
 
 
 def make_excerpt(text, limit=120):
-    """본문에서 '[궁] 유산명 - ' 머리말을 빼고 앞부분만 잘라 출처 카드용 미리보기를 만들어요."""
-    body = text.split(" - ", 1)[1] if " - " in text else text
-    body = re.sub(r"\s+", " ", body).strip()
+    """설명글 앞부분을 잘라 출처 카드용 미리보기를 만들어요. (text에는 머리말이 없어요)"""
+    body = re.sub(r"\s+", " ", text).strip()
     return body if len(body) <= limit else body[:limit] + "…"
 
 

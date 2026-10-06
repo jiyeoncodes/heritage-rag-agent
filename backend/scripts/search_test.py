@@ -1,6 +1,6 @@
 # search_test.py
 # ------------------------------------------------------------
-# 사용자의 "질문"을 임베딩한 뒤, heritage_chunks 테이블에서
+# 사용자의 "질문"을 임베딩한 뒤, heritage_chunk(+heritage) 표에서
 # 의미가 가장 비슷한 유산 설명 N개를 찾아 보여주는 테스트 스크립트예요.
 # (RAG의 "R = Retrieval(검색)" 부분이에요. LLM 답변은 이 다음 단계!)
 #
@@ -64,10 +64,11 @@ def search(question, top_k=TOP_K):
     # 1 - 거리 = 유사도(1에 가까울수록 비슷)
     cur.execute(
         """
-        SELECT gung_name, contents_kor, chunk_text,
-               1 - (embedding <=> %s::vector) AS similarity
-        FROM heritage_chunks
-        ORDER BY embedding <=> %s::vector
+        SELECT h.group_name, h.name_kor, c.chunk_text,
+               1 - (c.embedding <=> %s::vector) AS similarity
+        FROM heritage_chunk c
+        JOIN heritage h ON h.id = c.heritage_id      -- 청크에 유산 이름·분류를 붙여요
+        ORDER BY c.embedding <=> %s::vector
         LIMIT %s
         """,
         (vec_literal, vec_literal, top_k),

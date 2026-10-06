@@ -13,7 +13,8 @@
 #
 # 사용 방법:
 #   python eval_answer.py              # B(환각) → A(정답있음) 순서로 전부
-#   python eval_answer.py halluc       # B(환각 테스트)만 - 6번 호출
+#   python eval_answer.py halluc       # B(환각 테스트)만 - 7번 호출
+#   python eval_answer.py halluc --fresh   # 저장된 결과를 무시하고 다시 호출 (검색 방식을 바꾼 뒤 재평가할 때)
 #   python eval_answer.py hard         # 어려운 질문만(환각 6 + 별칭형 4 = 10번 호출)
 #   python eval_answer.py answerable   # A(정답 있는 질문)만
 #
@@ -43,15 +44,16 @@ Q_RETRY_WAIT = 30             # 그때 기다릴 시간(초)
 # ------------------------------------------------------------
 # 환각 테스트용 질문: 우리 데이터(국가유산청 궁궐·종묘 API)에 "답이 없는" 질문들이에요.
 # 정답은 하나, "확인할 수 없다"고 답하는 것!
-#   - 경희궁, 조선 왕릉은 아직 수집하지 않은 '알려진 데이터 공백'이에요.
+#   - 경희궁·조선 왕릉은 수집을 마쳤으니, 이 질문들은 '자료가 있는 대상의, 자료에 없는 내용'을 묻는 시험이에요.
 # ------------------------------------------------------------
 HALLUC_SET = [
     "경복궁에 놀이공원이 있어?",
     "경복궁의 입장료는 얼마야?",
     "창덕궁 주차장은 어디에 있어?",
-    "경희궁은 언제 지어졌어?",                 # 데이터 공백(경희궁 미수집)
-    "조선 왕릉 중 가장 큰 능은 어디야?",        # 데이터 공백(왕릉 미수집)
-    "세종대왕릉(영릉)은 어디에 있어?",          # 데이터 공백(왕릉 미수집)
+    "조선 왕릉 중 가장 큰 능은 어디야?",      # 크기 비교 정보가 자료에 없음 (왕릉 자료가 있어도 거절해야 해요)
+    "경희궁의 입장료는 얼마야?",               # 경희궁 자료는 있지만 입장료 정보는 없음
+    "동구릉 주차장은 어디에 있어?",             # 동구릉 자료는 있지만 주차장 정보는 없음
+    "광해군의 무덤은 어디에 있어?",             # 광해군 언급은 있어도 그의 무덤 정보는 없음(가장 어려움)
 ]
 
 # 답변에 이 표현이 있으면 "모른다고 했다"로 자동 판정해요. (LLM에게 알려준 문구: "확인할 수 없습니다")
@@ -102,8 +104,9 @@ def run_one(question):
 def get_source_line(reply):
     """답변에서 '출처: ...' 줄만 뽑아요. 없으면 빈 문자열."""
     for line in reply.splitlines():
-        if line.strip().startswith("출처"):
-            return line
+        found = re.search(r"출처\s*[:：]", line)    # 문장 끝에 붙은 "...입니다. 출처: [..]"도 찾아요 (rag.py 파서와 같은 규칙)
+        if found:
+            return line[found.start():]
     return ""
 
 
@@ -135,7 +138,7 @@ def evaluate(task, reply, hits):
     source = get_source_line(reply)
     return {"group": group, "type": qtype, "question": q, "expected": f"{gung} {name}",
             "retrieved": any(g == gung and n == name for g, n, _t, _s in hits),   # 검색에서 정답을 가져왔나?
-            "in_source": f"{gung} {name}" in source,                               # 정답을 출처로 골랐나? (엄격)
+            "in_source": f"{gung} {name}" in source.replace("[", "").replace("]", ""),  # "[창덕궁] 돈화문"처럼 대괄호를 나눠 써도 인정                               # 정답을 출처로 골랐나? (엄격)
             "in_text": name in reply,                                              # 정답 이름이 답변에 있나? (느슨)
             "refused": refused, "reply": reply}
 
@@ -172,9 +175,12 @@ def print_report(rows):
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    fresh = "--fresh" in sys.argv[1:]  # 검색 방식을 바꾼 뒤 같은 질문을 다시 평가할 때 써요 (저장된 결과를 무시)
+    mode = args[0] if args else "all"
     tasks = build_tasks(mode)
-    done = load_done()                 # 이전에 이미 끝낸 질문들
+    done_all = load_done()             # 저장돼 있는 모든 결과
+    done = {} if fresh else done_all   # 이어하기: 이미 끝낸 질문들 (--fresh면 비움 → 전부 다시 호출)
     rows = []
     stopped_by_quota = False
     new_calls = 0
@@ -198,7 +204,7 @@ def main():
         rows.append(evaluate(task, reply, hits))
         new_calls += 1
         # 지금까지 결과를 '이번에 처리 안 한 질문의 저장본'과 합쳐서 바로 저장해요.
-        save_rows(rows + [v for k, v in done.items() if k not in {(r["group"], r["question"]) for r in rows}])
+        save_rows(rows + [v for k, v in done_all.items() if k not in {(r["group"], r["question"]) for r in rows}])
         time.sleep(SLEEP_BETWEEN_QUESTIONS)
 
     if rows:
