@@ -56,7 +56,7 @@ export default function App() {
         <h1>궁궐·종묘 AI 해설</h1>
         <span className={`health ${health === 'down' ? 'bad' : health ? 'ok' : ''}`}>{healthText}</span>
       </header>
-      <p className="muted">국가유산청 궁궐·종묘 자료를 근거로 답하고, 출처를 함께 보여줘요. 자료에 없는 내용은 "확인할 수 없다"고 답해요.</p>
+      <p className="muted">국가유산청의 궁궐·종묘·경희궁·조선왕릉 자료를 근거로 답하고, 출처를 함께 보여줘요. 자료에 없는 내용은 "확인할 수 없다"고 답해요.</p>
 
       <QuestionForm question={question} loading={status.kind === 'loading'} onChange={setQuestion} onSubmit={handleAsk} />
 
