@@ -8,8 +8,8 @@ import type { FormEvent } from 'react'
 
 const MAX_LENGTH = 300 // 백엔드 AskRequest 의 max_length 와 같아야 해요.
 
-// 예시 질문: 마지막 것은 자료에 없는 궁(경희궁)이라 "모른다"고 답하는지 확인용이에요.
-const EXAMPLES = ['경복궁의 정문은 어디야?', '창덕궁 후원에는 어떤 곳이 있어?', '종묘는 어떤 곳이야?', '경희궁은 언제 지어졌어?']
+// 예시 질문: 마지막 것은 자료에 없는 내용(광해군의 무덤)이라 "모른다"고 답하는지 확인용이에요.
+const EXAMPLES = ['경복궁의 정문은 어디야?', '창덕궁 후원에는 어떤 곳이 있어?', '종묘는 어떤 곳이야?', '단종의 무덤은 어디에 있어?', '광해군의 무덤은 어디에 있어?']
 
 interface Props {
   question: string
