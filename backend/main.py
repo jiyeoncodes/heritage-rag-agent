@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 import rag      # 검색 + 답변 생성 로직 (같은 backend/ 폴더의 rag.py). 이때 .env도 함께 불러와져요.
+import agent    # LLM이 도구(유산 검색·실록 검색·능 이름 찾기)를 골라 쓰는 Agent (agent.py)
 
 logger = logging.getLogger("heritage")      # 서버 터미널에 오류 내용을 남기기 위한 기록 도구예요.
 
@@ -123,4 +124,34 @@ def ask(req: AskRequest):
     except Exception:
         # 예상하지 못한 오류: 자세한 내용(내부 정보 포함)은 서버 터미널에만 남기고, 사용자에게는 일반 문구만 보여줘요.
         logger.exception("질문 처리 중 예상치 못한 오류")
+        raise HTTPException(status_code=500, detail="서버에서 알 수 없는 오류가 발생했어요.")
+
+
+# ------------------------------------------------------------
+# 4. Agent 엔드포인트 (2단계)
+# ------------------------------------------------------------
+class AgentStep(BaseModel):
+    tool: str = Field(description="Agent가 부른 도구 이름")
+    args: dict = Field(description="도구에 넘긴 인자")
+    n_results: int = Field(description="도구가 찾아온 자료 수")
+
+
+class AgentResponse(BaseModel):
+    answer: str = Field(description="AI 답변 (출처 줄은 cited에 따로 있어요)")
+    cited: list[str] = Field(description="답변 끝에 AI가 출처로 적은 이름들")
+    model: str = Field(description="실제로 답한 AI 모델 이름")
+    steps: list[AgentStep] = Field(description="Agent가 한 일(도구 호출 기록)")
+    sources: list[dict] = Field(description="도구가 찾아온 자료 목록 (kind: heritage 또는 sillok)")
+
+
+@app.post("/api/agent/ask", response_model=AgentResponse, summary="질문하기 (Agent)")
+def agent_ask(req: AskRequest):
+    """LLM이 질문을 보고 도구(유산 검색 / 실록 검색 / 능 이름 찾기)를 직접 골라 쓰며 답해요."""
+    try:
+        return agent.ask(req.question)
+    except rag.RagError as e:
+        logger.warning("Agent 오류 %s: %s", type(e).__name__, e.message)
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    except Exception:
+        logger.exception("Agent 처리 중 예상치 못한 오류")
         raise HTTPException(status_code=500, detail="서버에서 알 수 없는 오류가 발생했어요.")

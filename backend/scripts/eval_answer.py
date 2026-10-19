@@ -17,6 +17,7 @@
 #   python eval_answer.py halluc --fresh   # 저장된 결과를 무시하고 다시 호출 (검색 방식을 바꾼 뒤 재평가할 때)
 #   python eval_answer.py hard         # 어려운 질문만(환각 6 + 별칭형 4 = 10번 호출)
 #   python eval_answer.py answerable   # A(정답 있는 질문)만
+#   python eval_answer.py answerable --set heldout   # 새 검증 질문 10개만 (결과는 ..._heldout.csv에 따로 저장)
 #
 # 모델을 바꿔서 비교하고 싶으면 (결과 파일 이름에 모델명이 들어가서 따로 저장돼요):
 #   Windows(PowerShell):  $env:LLM_MODEL="gemini-3.1-flash-lite"; python eval_answer.py halluc
@@ -30,6 +31,7 @@ import time
 
 import answer_test                              # 앞서 만든 RAG 답변 코드를 재사용해요
 from answer_test import answer, is_retryable, is_daily_quota, LLM_MODEL
+from eval_heldout_set import HELDOUT_SET        # 튜닝에 쓰지 않은 새 검증 질문 10개
 from eval_search import EVAL_SET                # 검색 평가 때 쓴 15개 질문(정답 포함)을 그대로 재사용해요
 from search_test import PROJECT_ROOT
 
@@ -61,7 +63,8 @@ REFUSAL_WORDS = ["확인할 수 없", "알 수 없", "나와 있지 않", "찾�
 
 # 결과 CSV 위치 (모델마다 파일이 따로 생겨요)
 OUT_DIR = PROJECT_ROOT / "data" / "eval"
-OUT_PATH = OUT_DIR / f"answer_eval_{re.sub(r'[^A-Za-z0-9._-]', '_', LLM_MODEL)}.csv"
+USE_HELDOUT = "--set" in sys.argv and "heldout" in sys.argv       # python eval_answer.py answerable --set heldout
+OUT_PATH = OUT_DIR / (f"answer_eval_{re.sub(r'[^A-Za-z0-9._-]', '_', LLM_MODEL)}" + ("_heldout" if USE_HELDOUT else "") + ".csv")
 FIELDS = ["group", "type", "question", "expected", "retrieved", "in_source", "in_text", "refused", "reply"]
 BOOL_FIELDS = ["retrieved", "in_source", "in_text", "refused"]
 
@@ -118,7 +121,9 @@ def one_line(text, n=60):
 def build_tasks(mode):
     """이번에 처리할 질문 목록을 (그룹, 유형, 질문, 정답궁, 정답유산) 형태로 만들어요. 환각 테스트를 먼저 해요."""
     halluc = [("환각테스트", "자료없음", q, None, None) for q in HALLUC_SET]
-    answerable = [("정답있음", t, q, g, n) for q, g, n, t in EVAL_SET]
+    answerable = [("정답있음", t, q, g, n) for q, g, n, t in (HELDOUT_SET if USE_HELDOUT else EVAL_SET)]
+    if USE_HELDOUT:
+        return answerable        # 새 검증 질문 모드는 정답 있는 질문 10개만 평가해요 (환각 테스트는 이미 기존 파일에 있어요)
     if mode == "halluc":
         return halluc
     if mode == "answerable":
@@ -175,7 +180,7 @@ def print_report(rows):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = [a for a in sys.argv[1:] if not a.startswith("--") and a != "heldout"]   # "--set heldout"의 heldout은 질문 모드가 아니에요
     fresh = "--fresh" in sys.argv[1:]  # 검색 방식을 바꾼 뒤 같은 질문을 다시 평가할 때 써요 (저장된 결과를 무시)
     mode = args[0] if args else "all"
     tasks = build_tasks(mode)

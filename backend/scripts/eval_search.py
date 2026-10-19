@@ -26,6 +26,7 @@ from pathlib import Path
 
 # search_test.py에 이미 만들어 둔 설정과 함수를 그대로 재사용해요. (같은 scripts/ 폴더에 있어야 해요)
 from search_test import embed_query, PROJECT_ROOT
+from eval_heldout_set import HELDOUT_SET   # 튜닝에 쓰지 않은 새 검증 질문 10개
 
 # 실제 서비스와 같은 검색(rag.py의 search_debug)으로 평가해야 점수가 서비스 품질을 말해줘요.
 sys.path.insert(0, str(PROJECT_ROOT))   # backend/ 폴더를 import 경로에 추가 (rag.py, hybrid_search.py가 있는 곳)
@@ -138,7 +139,10 @@ def main():
     ap.add_argument("--kw", choices=["all", "tomb"], default="tomb",
                     help="tomb=왕릉 질문에만 키워드 점수 적용 (기본, hybrid_search.KW_LABELS) / all=모든 질문에 적용")
     ap.add_argument("--alpha", type=float, default=None, help="키워드 가중치(기본 hybrid_search.ALPHA)")
+    ap.add_argument("--set", choices=["tuned", "heldout"], default="tuned", dest="qset",
+                    help="tuned=기존 29문항(튜닝에 쓴 질문, 기본) / heldout=새 검증 질문 10문항 (결과 파일 이름에 _heldout이 붙어요)")
     args = ap.parse_args()
+    eval_set = HELDOUT_SET if args.qset == "heldout" else EVAL_SET   # 이번에 평가할 질문 목록
     if args.alpha is not None:
         hybrid_search.ALPHA = args.alpha
     if args.kw == "all":
@@ -148,8 +152,8 @@ def main():
 
     cache = load_vec_cache()
     rows = []   # 질문별 결과를 모아 둘 리스트
-    for i, (question, gung, name, qtype) in enumerate(EVAL_SET, start=1):
-        print(f"[{i}/{len(EVAL_SET)}] {question}")
+    for i, (question, gung, name, qtype) in enumerate(eval_set, start=1):
+        print(f"[{i}/{len(eval_set)}] {question}")
         hits, info = rag.search_debug(question, top_k=TOP_K, method=args.method,
                                        query_vec=get_query_vec(question, cache))
         results = [(h["gung_name"], h["name"], h["similarity"]) for h in hits]   # (궁, 유산명, 벡터 유사도)
@@ -195,7 +199,8 @@ def main():
     out_dir = PROJECT_ROOT / "data" / "eval"
     out_dir.mkdir(parents=True, exist_ok=True)
     suffix = (f"_a{hybrid_search.ALPHA}" if args.method == "weighted" and args.alpha is not None else "") \
-             + ("_kwall" if args.kw == "all" else "")
+             + ("_kwall" if args.kw == "all" else "") \
+             + ("_heldout" if args.qset == "heldout" else "")
     out_path = out_dir / f"search_eval_{args.method}{suffix}.csv"
     with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
