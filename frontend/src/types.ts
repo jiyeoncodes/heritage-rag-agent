@@ -31,3 +31,52 @@ export interface HealthResponse {
   fallback_model: string
   embedding_model: string
 }
+
+// ------------------------------------------------------------
+// Agent (POST /api/agent/ask) 응답 타입
+// ⚠ 백엔드 main.py 의 AgentStep, AgentResponse 와 같은 모양이어야 해요.
+// ------------------------------------------------------------
+
+/** Agent가 부른 도구 한 번의 기록 */
+export interface AgentStep {
+  tool: string                     // 도구 이름 (search_heritage / search_sillok / find_tomb_names)
+  args: Record<string, unknown>    // 도구에 넘긴 인자 (예: { query: "영릉 천장" })
+  n_results: number                // 도구가 찾아온 자료 수
+}
+
+/** Agent가 찾아온 자료의 공통 부분 */
+interface AgentSourceBase {
+  label: string                    // 출처 표시용 이름 (예: "경복궁 광화문", "세종실록 28년 7월 20일 …")
+  similarity: number               // 질문과의 유사도
+  cited: boolean                   // 답변 본문에 실제로 쓰였으면 true
+}
+
+/** 유산 설명 자료 (kind === 'heritage') */
+export interface HeritageAgentSource extends AgentSourceBase {
+  kind: 'heritage'
+  text: string                     // 설명글 앞부분
+  img_url: string | null           // 대표 이미지 (없으면 null)
+}
+
+/** 실록 기사 요약 자료 (kind === 'sillok') */
+export interface SillokAgentSource extends AgentSourceBase {
+  kind: 'sillok'
+  article_id: string
+  date: string                     // 예: "중종실록 20년 5월 4일"
+  summary: string                  // AI가 만든 한글 요약
+  tomb: string | null              // 관련 능 (없으면 null)
+  url: string | null               // 국사편찬위원회 원문 주소
+}
+
+/** kind 값으로 두 종류를 구분하는 타입 (TypeScript가 kind를 보고 알맞은 항목만 쓰게 해줘요) */
+export type AgentSource = HeritageAgentSource | SillokAgentSource
+
+export interface AgentResponse {
+  answer: string
+  cited: string[]                  // 답변에 쓰인 자료 이름들
+  model: string
+  steps: AgentStep[]               // Agent가 한 일
+  sources: AgentSource[]
+  guard: string | null             // 안전장치 개입: 'nudged' | 'replaced' | null
+  retried: boolean                 // 포기하려다 한 번 더 찾았으면 true
+}

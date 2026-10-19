@@ -27,6 +27,36 @@ from agent_tools import TOOLS
 
 MAX_STEPS = 5                    # 도구 호출 왕복 최대 횟수 (무료 한도와 시간을 지키기 위한 안전장치)
 
+# ---- 안전장치: 도구를 한 번도 안 쓰고 답하는 것을 막아요 (R05 유형) ----
+# LLM은 "도구를 쓰라"는 규칙이 있어도 가끔 자기 배경지식으로 그냥 답해요. 그러면 근거(출처)가 없는 답이 나가요.
+# 그래서 코드가 직접 확인해요: 도구를 한 번도 안 썼으면 → 1번은 "먼저 검색하라"고 다시 시키고,
+# 그래도 안 쓰면 → LLM의 답을 버리고 표준 거절 문장으로 바꿔요.
+STANDARD_REFUSAL = "제공된 자료에서는 확인할 수 없습니다."
+NO_TOOL_NUDGE = ("아직 도구를 한 번도 사용하지 않았습니다. 당신의 배경지식으로 답하지 말고, "
+                 "먼저 search_heritage나 search_sillok 같은 도구로 검색하세요. "
+                 "검색 결과에 근거가 없으면 \"제공된 자료에서는 확인할 수 없습니다.\"라고만 답하세요.")
+# 인사·감사처럼 검색이 필요 없는 말은 도구 없이 답해도 돼요 (이런 말까지 거절로 바꾸면 어색하니까요)
+# ---- 안전장치 ②: 검색을 덜 해보고 포기하는 것을 막아요 (S04·S26 유형) ----
+# 같은 질문도 LLM이 첫 검색에서 포기할 때가 있고(S26 1회차), 검색어를 바꿔 한 번 더 찾으면 풀려요(S26 2회차).
+# 그래서 "포기하는 답"을 하는데 검색을 RETRY_BELOW번 미만 했으면, 딱 한 번만 "다른 검색어로 더 찾아보라"고 시켜요.
+RETRY_BELOW = 3                                            # 검색(유산+실록)을 이 횟수 미만 했을 때만 재시도를 시킴
+RETRY_NUDGE = ("자료를 충분히 찾아보지 않고 확인할 수 없다고 답하려 합니다. 한 번 더 검색해 보세요. "
+               "① 지금까지와 다른 검색어(질문의 핵심 단어를 실록에서 쓰는 말로 바꾸거나, 인물·사건 이름만 짧게)를 쓰고 "
+               "② tomb·reign 필터가 있었다면 비워 보세요. 그래도 근거가 없으면 지어내지 말고 "
+               "\"제공된 자료에서는 확인할 수 없습니다.\"라고 답하세요.")
+SEARCH_TOOLS = ("search_heritage", "search_sillok")        # 'find_tomb_names'는 이름 확인용이라 검색 횟수에 세지 않아요
+
+
+def gave_up(text):
+    """'못 찾았다'는 취지의 답인지 판단해요. is_refusal(확인할 수 없음)에 더해 '확인되지 않'도 잡아요.
+    (S26 1회차: "구체적인 이름은 확인되지 않으며…" 는 is_refusal로는 안 잡혀서 따로 봐요)"""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    head = " ".join(sentences[:2])
+    return is_refusal(text) or bool(re.search(r"확인되지 (않|못)|찾을 수 없|기록이 없", head))
+
+
+SMALLTALK = re.compile(r"^\s*(안녕|하이|hi\b|hello|고마워|고맙|감사|수고|반가)", re.IGNORECASE)
+
 SYSTEM_INSTRUCTION = """당신은 조선의 궁궐, 종묘, 조선왕릉과 조선왕조실록을 안내하는 해설사입니다.
 질문에 맞는 도구를 직접 골라 사용하고, 도구가 돌려준 내용만 근거로 답하세요.
 
@@ -134,6 +164,8 @@ def ask(question):
     contents = [types.Content(role="user", parts=[types.Part.from_text(text=question)])]
     steps, sources, seen = [], [], set()
     model_used = rag.LLM_MODEL
+    retried = False                                        # '포기 방지' 재시도를 시켰는지 (최대 1번)
+    guard = None                                           # 안전장치가 작동했는지 기록: None / 'nudged'(다시 시킴) / 'replaced'(거절 문장으로 대체)
 
     try:
         for step in range(MAX_STEPS + 1):
@@ -144,6 +176,22 @@ def ask(question):
                 reply = (response.text or "").strip()
                 if not reply:
                     raise rag.LlmError()
+                if steps or SMALLTALK.match(question):         # 도구를 썼거나 단순 인사면 → 아래 '포기 방지'만 확인
+                    n_search = sum(1 for s in steps if s["tool"] in SEARCH_TOOLS)
+                    if steps and not retried and not last and n_search < RETRY_BELOW and gave_up(reply):
+                        retried = True                         # 재시도는 딱 1번만 (무한 반복·한도 낭비 방지)
+                        contents.append(response.candidates[0].content)
+                        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=RETRY_NUDGE)]))
+                        continue
+                    break
+                # ↓ 도구를 한 번도 안 쓰고 답했다 → 안전장치
+                if guard is None:                              # 1차: 모델의 답은 기록에 남기고, "먼저 검색하라"고 다시 시켜요
+                    guard = "nudged"
+                    contents.append(response.candidates[0].content)
+                    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=NO_TOOL_NUDGE)]))
+                    continue
+                reply = STANDARD_REFUSAL                       # 2차: 그래도 안 썼다 → 근거 없는 답은 버리고 표준 거절
+                guard = "replaced"
                 break
 
             contents.append(response.candidates[0].content)    # 모델의 요청을 대화 기록에 그대로 덧붙여요 (사고 서명 등 보존)
@@ -177,7 +225,7 @@ def ask(question):
         keys = [s.get("label"), s.get("date")]
         s["cited"] = (not refused) and any(k and k in match_text for k in keys)   # 거절 답변이면 모두 false
     cited = [s["label"] for s in sources if s["cited"]]    # 출처 목록은 글자 파싱 대신 위 표시에서 만들어요
-    return {"answer": body, "cited": cited, "model": model_used, "steps": steps, "sources": sources}
+    return {"answer": body, "cited": cited, "model": model_used, "steps": steps, "sources": sources, "guard": guard, "retried": retried}
 
 
 if __name__ == "__main__":
@@ -187,6 +235,10 @@ if __name__ == "__main__":
     print("[Agent가 한 일]")
     for i, s in enumerate(out["steps"], 1):
         print(f"  {i}. {s['tool']}({s['args']}) -> {s['n_results']}건")
+    if out["retried"]:                                     # 포기하려다 한 번 더 찾아보게 했으면 알려 줘요
+        print("\n[안전장치] retry  (검색을 덜 하고 포기하려 해서 한 번 더 찾게 함)")
+    if out["guard"]:                                       # 안전장치가 개입했으면 알려 줘요
+        print(f"\n[안전장치] {out['guard']}  (도구 없이 답하려 해서 개입함)")
     print(f"\n[답변] ({out['model']})\n{out['answer']}\n")
     print("[출처]", ", ".join(out["cited"]) or "-")
     print("\n[Agent가 찾아온 자료]")                          # 답이 빈약할 때: 자료가 없었는지, 자료는 있는데 못 썼는지 구분용

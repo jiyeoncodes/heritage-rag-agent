@@ -3,7 +3,7 @@
 // 백엔드(FastAPI)와 대화하는 함수들을 모아 둔 파일이에요.
 // 화면(컴포넌트)은 fetch의 세부 사항을 몰라도 askQuestion()만 부르면 돼요.
 // ------------------------------------------------------------
-import type { AskResponse, HealthResponse } from './types'
+import type { AgentResponse, AskResponse, HealthResponse } from './types'
 
 // 백엔드 주소: .env.local 의 VITE_API_BASE_URL 이 있으면 그것, 없으면 로컬 서버를 써요.
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '')
@@ -50,6 +50,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /** 질문을 보내고 답변 + 출처를 받아와요. */
 export function askQuestion(question: string, signal?: AbortSignal): Promise<AskResponse> {
   return request<AskResponse>('/api/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+    signal,
+  })
+}
+
+/** Agent에게 질문해요. AI가 도구를 여러 번 부를 수 있어서 askQuestion보다 오래 걸려요(10~40초). */
+export function askAgent(question: string, signal?: AbortSignal): Promise<AgentResponse> {
+  return request<AgentResponse>('/api/agent/ask', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question }),

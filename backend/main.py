@@ -142,6 +142,8 @@ class AgentResponse(BaseModel):
     model: str = Field(description="실제로 답한 AI 모델 이름")
     steps: list[AgentStep] = Field(description="Agent가 한 일(도구 호출 기록)")
     sources: list[dict] = Field(description="도구가 찾아온 자료 목록 (kind: heritage 또는 sillok)")
+    guard: str | None = Field(default=None, description="안전장치 개입: nudged(도구 없이 답하려 해서 다시 시킴) / replaced(표준 거절로 대체) / null")
+    retried: bool = Field(default=False, description="검색을 덜 하고 포기하려 해서 한 번 더 찾게 했으면 true")
 
 
 @app.post("/api/agent/ask", response_model=AgentResponse, summary="질문하기 (Agent)")

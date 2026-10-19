@@ -41,3 +41,20 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .excerpt { margin: 4px 0 0; font-size: .9rem; color: var(--muted); }
 details { margin-top: 12px; }
 summary { cursor: pointer; color: var(--muted); }
+
+/* ---- Agent 화면 (모드 전환, Agent가 한 일, 실록 자료) ---- */
+.mode { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.mode-buttons { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--card); }
+.mode-btn { background: transparent; color: var(--text); border: 0; padding: 6px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+.mode-btn.active { background: var(--accent); color: var(--accent-text); }
+.mode-btn:focus-visible { outline-offset: -2px; }
+.steps { list-style: none; counter-reset: step; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+.step { counter-increment: step; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.step::before { content: counter(step) '.'; color: var(--muted); min-width: 1.4em; }
+.step-args { font-size: .9rem; word-break: keep-all; overflow-wrap: anywhere; }
+.sim.none { color: var(--bad); }
+.notes { margin: 12px 0 0; padding: 8px 12px 8px 28px; font-size: .85rem; color: var(--muted); background: var(--bg); border-radius: 8px; }
+.tag.sillok { border-color: var(--accent); color: var(--accent); }
+.tag.heritage { border-color: var(--ok); color: var(--ok); }
+.excerpt.strong { color: var(--text); font-weight: 600; }
+.source a { color: var(--accent); }
